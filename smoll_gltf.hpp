@@ -223,7 +223,7 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
   uint32_t stack_array_sizes[UINT8_MAX] = {0};
   int32_t current_array_stack_index = -1;
 
-  auto update_current_array_stack_index = [&] constexpr noexcept{
+  auto update_current_array_stack_index = [&]() constexpr noexcept{
     for(auto stack_index = stack_depth; stack_index > 0; --stack_index){
       if(stack_items[stack_index] == array){
         current_array_stack_index = stack_index;
@@ -240,9 +240,36 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
 
   int32_t begin_string_offset = -1;
 
-  auto add_array_to_stack_and_init_array_in_gltf_object = [&]() constexpr noexcept{
+  auto count_items_in_array = [&](int32_t open_square_symbol_index) constexpr noexcept{
+    int32_t item_count = 0;
+    uint32_t extra_thingy = 0;
+
+    for(auto symbol_index = open_square_symbol_index + 1; symbol_index < symbol_count; ++symbol_index){
+      auto current_symbol = symbols[symbol_index];
+      if(extra_thingy){
+        switch(current_symbol){
+          case Symbol::close_squigily:
+          case Symbol::close_square: 
+            --extra_thingy; continue;
+          default: continue;
+        }
+
+      }else switch(current_symbol){
+        case Symbol::open_square:
+        case Symbol::open_squigily:
+          ++extra_thingy; continue;
+        case Symbol::comma: ++item_count; continue;
+        case Symbol::close_square: ++item_count; return item_count;
+        default: continue;
+      }
+    }
+
+    return item_count;
+  };
+
+  auto add_array_to_stack_and_init_array_in_gltf_object = [&](int32_t open_square_symbol_index) constexpr noexcept{
     //TODO: calculate array size.
-    uint32_t array_size =0;
+    uint32_t array_size = count_items_in_array(open_square_symbol_index);
     ++stack_depth;
     stack_items[stack_depth] = array;
     stack_array_sizes[stack_depth] = array_size;
@@ -250,12 +277,21 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
 
     switch(current_gltf_item){
       case glTF_Item::scenes: {
-        gltf.scenes = allocator(sizeof(GLTF::Scene) * array_size);
+        gltf.scenes = allocator(sizeof(GLTF::Scene) * array_size); return;
       };
     }
   };
 
-  auto set_value_in_gltf_object_and_decrease_stack_depth = [&](String value) constexpr noexcept{
+  auto get_value_string_from_value_definition = [&](int32_t end_of_definition_symbol_index) constexpr noexcept{
+    auto begin_offset = symbol_offsets[end_of_definition_symbol_index-1] + 1; 
+    auto end_offset = symbol_offsets[end_of_definition_symbol_index] - 1;
+    return String{
+      .data = json + begin_offset,
+      .length = end_offset - begin_offset,
+    };
+  };
+
+  auto set_value_in_glTF_object_and_decrease_stack_depth = [&](String value) constexpr noexcept{
 
   };
 
@@ -263,13 +299,11 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
 
   };
 
-  auto set_value_in_glTF_value_array = [&](uint32_t symbol_index){
+  auto set_value_in_glTF_value_array = [&](String value) constexpr noexcept{
 
   };
-  //NEWNEWNENWNEWNENE
-  //NEWNEWNENWNEWNENE
 
-  auto add_defintion_to_stack = [&](String definition){
+  auto add_defintion_to_stack = [&](String definition) constexpr noexcept{
     ++stack_depth;
     stack_items[stack_depth] = definition;
     stack_tags[stack_depth] = definition;
@@ -280,11 +314,19 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
     stack_items[stack_depth] = object;
   };
 
-  auto add_gltf_root_item_to_stack = [&](String string){
+  auto add_glTF_root_item_to_stack = [&](String string) constexpr noexcept{
     if(memcmp(string.data, "asset", string.length)){
       add_defintion_to_stack(string);
       current_gltf_item = glTF_Item::asset;
     }
+  };
+
+  auto check_is_actualy_value_definition = [&](int32_t end_of_definition_symbol_index) constexpr noexcept{
+    auto previous_symbol = symbols[end_of_definition_symbol_index-1];
+    if(previous_symbol not_eq Symbol::open_square and previous_symbol not_eq Symbol::comma){
+      return false;
+    }
+    return true;
   };
 
   if(symbols[0] not_eq Symbol::open_squigily){
@@ -293,7 +335,6 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
     stack_depth = 0;
     stack_items[stack_depth] = root;
   }
-
   for(auto symbol_index = 1; symbol_index < symbol_count; ++symbol_index){
     auto current_symbol = symbols[symbol_index];
     auto current_stack_item = stack_items[stack_depth];
@@ -312,44 +353,69 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
     }
 
     switch(current_stack_item){
-      case root : 
+      case root :{ 
         if(has_string) 
-          add_gltf_root_item_to_stack(string); 
+          add_glTF_root_item_to_stack(string); 
         //Should be imposible to get hear unless the file is malformed.
         else return Error::problem;
         continue;
-      case definition : 
-        if(has_string) set_value_in_gltf_object_and_decrease_stack_depth(string);
-        else switch(current_symbol){
-          case Symbol::open_squigily: 
-            add_object_to_stack(); continue;
-          case Symbol::open_square:
-            add_array_to_stack_and_init_array_in_gltf_object(); continue;
-          //Must be a value
-          case Symbol::comma:
-          default:continue;
-        } continue;
-      case object:
-        if(has_string) add_defintion_to_stack(string); continue;
-      case array: 
-        if(has_string){
+      }
 
+      case definition :{ 
+        if(has_string) set_value_in_glTF_object_and_decrease_stack_depth(string);
+        else switch(current_symbol){
+          case Symbol::open_squigily: add_object_to_stack(); continue;
+          case Symbol::open_square: add_array_to_stack_and_init_array_in_gltf_object(symbol_index); continue;
+          case Symbol::comma:{
+            auto value = get_value_string_from_value_definition(symbol_index);
+            set_value_in_glTF_object_and_decrease_stack_depth(value);
+            continue;
+          }
+          default:continue;
+        } 
+        continue;
+      }
+
+      case object:{
+        if(has_string) add_defintion_to_stack(string); 
+        else if(current_symbol == Symbol::close_squigily) --stack_depth;
+        continue;
+      }
+
+      case array:{ 
+        if(has_string){
+          set_value_in_glTF_value_array(string);
           continue;
         }else switch(current_symbol){
-          case Symbol::open_squigily:
-            add_object_to_stack(); continue;
+          case Symbol::open_squigily: add_object_to_stack(); continue;
           //There are no arrays of arrays in the gltf spec.
           case Symbol::open_square: return Error::problem;
 
-          case Symbol::comma: 
+          case Symbol::comma:{
+            auto is_value = check_is_actualy_value_definition(symbol_index);
+            if(is_value){
+              auto value = get_value_string_from_value_definition(symbol_index);
+              set_value_in_glTF_value_array(value);
+            }
+          }
+
+          case Symbol::close_square:{
+            auto is_value = check_is_actualy_value_definition(symbol_index);
+            if(is_value){
+              auto value = get_value_string_from_value_definition(symbol_index);
+              set_value_in_glTF_value_array(value);
+            }
+            --stack_depth;
+            continue;
+          }
+          
           default: continue;
         }
         continue;
+      }
     }
   }
 
-  //NEWNEWNENWNEWNENE
-  //NEWNEWNENWNEWNENE
       //case Symbol::open_square:{
       //  auto array_size = 0;
       //  uint32_t unmatched_open_squigily = 0;
