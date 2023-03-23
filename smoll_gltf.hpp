@@ -110,7 +110,7 @@ enum class Symbol{
   comma,
 };
 
-auto count_json_symbols = [](char const * const json, uint32_t json_length) constexpr noexcept -> uint32_t{
+auto count_json_symbols = [](char8_t const * const json, uint32_t json_length) constexpr noexcept -> uint32_t{
   uint32_t token_count = 0;
   for(auto char_offset = 0; char_offset < json_length; ++char_offset){
     switch(json[char_offset]){
@@ -120,7 +120,7 @@ auto count_json_symbols = [](char const * const json, uint32_t json_length) cons
   return token_count;
 };
 
-auto parse_json_symbols = [](char const * const json, uint32_t json_length, uint32_t * offsets, Symbol * symbols) constexpr noexcept -> Error{
+auto parse_json_symbols = [](char8_t const * const json, uint32_t json_length, uint32_t * offsets, Symbol * symbols) constexpr noexcept -> Error{
   uint32_t current_token_offset = 0;
   Symbol current_token = Symbol::none;
   bool begin_string = false;
@@ -137,13 +137,10 @@ auto parse_json_symbols = [](char const * const json, uint32_t json_length, uint
         begin_string = false;
         return set_current_token(Symbol::end_string);
       }
-    }
-
-    switch(character){
-      case '"' : if(not begin_string){
+    }else switch(character){
+      case '"' :
         begin_string = true;
         return set_current_token(Symbol::begin_string);   
-      } 
       case '{' : return set_current_token(Symbol::open_squigily);
       case '}' : return set_current_token(Symbol::close_squigily);
       case '[' : return set_current_token(Symbol::open_square);
@@ -192,7 +189,7 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
   }
   binary_chunk.data = raw + 20 + json_chunk.length + 8; 
 
-  auto json = reinterpret_cast<char const *>(json_chunk.data);
+  auto json = reinterpret_cast<char8_t const *>(json_chunk.data);
   auto symbol_count = count_json_symbols(json, json_chunk.length);
   Symbol symbols[symbol_count];
   uint32_t symbol_offsets[symbol_count];
@@ -203,114 +200,193 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
     root,
     tag,
     define,
-    array,
+    definition,
     value,
+    array,
+    object
   };
 
-  enum class Root_Item{
-    none,
+  enum class glTF_Item{
     asset,
+    scenes,
+    nodes,
+    meshes__primitives,
+    meshes__primitives__attributes
   };
 
-  uint8_t stack_depth = -1;
+  int16_t stack_depth = -1;
   Parse_Item stack_items[UINT8_MAX];
   String stack_tags[UINT8_MAX];
   uint32_t stack_offsets[UINT8_MAX];
-  Root_Item root_item = none;
+  //Represents the index of the current item being parsed in whatever array on the stack
+  uint32_t stack_array_current_indices[UINT8_MAX] = {0};
+  uint32_t stack_array_sizes[UINT8_MAX] = {0};
+  int32_t current_array_stack_index = -1;
+
+  auto update_current_array_stack_index = [&] constexpr noexcept{
+    for(auto stack_index = stack_depth; stack_index > 0; --stack_index){
+      if(stack_items[stack_index] == array){
+        current_array_stack_index = stack_index;
+        return;
+      }
+    }
+    current_array_stack_index = -1;
+  };
+
+  bool in_array = false;
+
+  glTF_Item current_gltf_item = none;
   uint8_t current_stack_definition_tag;
 
-  uint32_t begin_string_offset = -1;
+  int32_t begin_string_offset = -1;
 
-  for(auto symbol_index = 0; symbol_index < symbol_count; ++symbol_index){
-    auto symbol = symbols[symbol_index];
-    auto offset = symbol_offsets[symbol_index];
+  auto add_array_to_stack_and_init_array_in_gltf_object = [&]() constexpr noexcept{
+    //TODO: calculate array size.
+    uint32_t array_size =0;
+    ++stack_depth;
+    stack_items[stack_depth] = array;
+    stack_array_sizes[stack_depth] = array_size;
+    stack_array_current_indices[stack_depth] = 0;
 
-    Parse_Item item;
-    if(stack_depth < 0){
-      item = none;
-    } else {
-      item = stack_items[stack_depth];
+    switch(current_gltf_item){
+      case glTF_Item::scenes: {
+        gltf.scenes = allocator(sizeof(GLTF::Scene) * array_size);
+      };
+    }
+  };
+
+  auto set_value_in_gltf_object_and_decrease_stack_depth = [&](String value) constexpr noexcept{
+
+  };
+
+  auto set_value_in_gltf_array = [&]() constexpr noexcept{
+
+  };
+
+  auto set_value_in_glTF_value_array = [&](uint32_t symbol_index){
+
+  };
+  //NEWNEWNENWNEWNENE
+  //NEWNEWNENWNEWNENE
+
+  auto add_defintion_to_stack = [&](String definition){
+    ++stack_depth;
+    stack_items[stack_depth] = definition;
+    stack_tags[stack_depth] = definition;
+  };
+
+  auto add_object_to_stack = [&]{
+    ++stack_depth;
+    stack_items[stack_depth] = object;
+  };
+
+  auto add_gltf_root_item_to_stack = [&](String string){
+    if(memcmp(string.data, "asset", string.length)){
+      add_defintion_to_stack(string);
+      current_gltf_item = glTF_Item::asset;
+    }
+  };
+
+  if(symbols[0] not_eq Symbol::open_squigily){
+    return Error::problem;
+  }else{
+    stack_depth = 0;
+    stack_items[stack_depth] = root;
+  }
+
+  for(auto symbol_index = 1; symbol_index < symbol_count; ++symbol_index){
+    auto current_symbol = symbols[symbol_index];
+    auto current_stack_item = stack_items[stack_depth];
+    bool has_string = false;
+    String string;
+
+    if(current_symbol == Symbol::begin_string){
+      begin_string_offset = symbol_offsets[symbol_index] + 1;
+      continue;
+    }else if(current_symbol == Symbol::end_string){
+      has_string = true;
+      auto string = String{
+        .data = json + begin_string_offset,
+        .length = (symbol_offsets[symbol_index] - 1) - begin_string_offset
+      };
     }
 
-    switch(symbol){
-
-      case Symbol::begin_string:{
-        begin_string_offset = offset;
-      }
-
-      case Symbol::end_string:{
-        if(begin_string_offset < 0) return Error::problem;
-        auto string = String{
-          .data = reinterpret_cast<char8_t const *>(json_chunk.data + offset),
-          .length = offset - begin_string_offset,
-        };
-        if(item == root){
-          if(memcmp(string.data, "asset", string.length)){
-            root_item = Root_Item::asset;
-          }
-        }
-        ++stack_depth;
-        stack_items[stack_depth] = tag;
-        stack_tags[stack_depth] = string;
+    switch(current_stack_item){
+      case root : 
+        if(has_string) 
+          add_gltf_root_item_to_stack(string); 
+        //Should be imposible to get hear unless the file is malformed.
+        else return Error::problem;
         continue;
-      }
+      case definition : 
+        if(has_string) set_value_in_gltf_object_and_decrease_stack_depth(string);
+        else switch(current_symbol){
+          case Symbol::open_squigily: 
+            add_object_to_stack(); continue;
+          case Symbol::open_square:
+            add_array_to_stack_and_init_array_in_gltf_object(); continue;
+          //Must be a value
+          case Symbol::comma:
+          default:continue;
+        } continue;
+      case object:
+        if(has_string) add_defintion_to_stack(string); continue;
+      case array: 
+        if(has_string){
 
-      case Symbol::colon:{
-        current_stack_definition_tag = stack_depth;
-        ++stack_depth;
-        stack_items[stack_depth] = define;
-        stack_offsets[stack_depth] = offset;
-        continue;
-      }
-
-      case Symbol::open_squigily:{
-        if(item == none){
-          stack_depth++;
-          stack_items[0] = root;
           continue;
+        }else switch(current_symbol){
+          case Symbol::open_squigily:
+            add_object_to_stack(); continue;
+          //There are no arrays of arrays in the gltf spec.
+          case Symbol::open_square: return Error::problem;
+
+          case Symbol::comma: 
+          default: continue;
         }
-        //All tags should increase the depth when they are parsed so this implise an empty {} in the root object.
-        if(item == root){
-          return Error::problem;
-        }
-      }
-      case Symbol::close_squigily:{
-        //End of json
-        if(item == root){
-          //Should then be -1.
-          --stack_depth;
-        }
-      }
-      case Symbol::open_square:{
-
-      }
-      case Symbol::close_square:{
-
-      }
-
-      case Symbol::comma:{
-        //if(stack_items[stack_depth] == tag){
-        //  auto definition = stack_tags[stack_depth - 2];
-        //  if(root_item == Root_Item::asset){
-        //    if(memcmp(definition.data,"generator",definition.length)){
-        //      gltf.asset.generator = stack_tags[stack_depth];
-        //    }
-        //    if(memcmp(definition.data, "version", definition.length)){
-        //      gltf.asset.version = stack_tags[stack_depth];
-        //    }
-        //  }
-
-        //}else if(stack_items[stack_depth] == define){
-          //Must be a number value,
-
-        }
-      }
-
-      case Symbol::none: return Error::problem;
+        continue;
     }
   }
-  
 
+  //NEWNEWNENWNEWNENE
+  //NEWNEWNENWNEWNENE
+      //case Symbol::open_square:{
+      //  auto array_size = 0;
+      //  uint32_t unmatched_open_squigily = 0;
+      //  uint32_t extra_open_square = 0;
+      //  
+      //  for(auto array_symbol_index = symbol_index; array_symbol_index < symbol_count; ++ array_symbol_index){
+      //    switch(symbols[array_symbol_index]){
+      //      case Symbol::comma:{
+      //        if(unmatched_open_squigily == 0 && extra_open_square == 0){
+      //          ++array_size;
+      //        }
+      //        continue;
+      //      }
+
+      //      case Symbol::open_squigily: ++unmatched_open_squigily; continue;
+      //      case Symbol::close_squigily:{
+      //        --unmatched_open_squigily;
+      //        continue;
+      //      }
+
+      //      case Symbol::open_square: ++extra_open_square; continue;
+      //      case Symbol::close_square: {
+      //        --extra_open_square;
+      //        if(extra_open_square == -1){
+      //          if(array_size > 0) ++array_size;
+      //          goto at_end_of_array;
+      //        }
+      //        continue;
+      //      }
+      //      default:continue;
+      //    }
+      //  }
+      //  at_end_of_array:
+      //  add_array_to_stack_and_init_array_in_gltf_object(array_size);
+      //  update_current_array_stack_index();
+      //  continue;
+      //}
   return Error::no_problem;
 }
 
