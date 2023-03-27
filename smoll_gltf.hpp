@@ -3,8 +3,6 @@
 #include <cstdlib>
 #include <cstddef>
 #include <cstring>
-#include <vector>
-#include <string_view>
 
 namespace smoll{
 
@@ -25,6 +23,18 @@ struct String{
   uint32_t length;
 };
 
+auto compair = [](String string, const char * value) constexpr noexcept{
+  if consteval{
+    for(auto i = 0; i < string.length; ++i){
+      if(value[i] != string.data[i]){
+        return 0;
+      }
+    }
+    return 1;
+  }
+  return memcmp(value, string.data, string.length);
+};
+
 struct GLTF{
   struct Asset{
     //in data
@@ -35,49 +45,61 @@ struct GLTF{
   } asset;
   uint32_t scene;
   struct Scene{
-
     String name;
-
-    struct Node{
-      String name;
-      float translation[3];
-      float rotation[4];
-      float scale[3];
-      float matrix[4][4];
-      uint32_t * children;
-    } * nodes;
-
+    uint32_t * nodes;
   } * scenes;
+
+  struct Node{
+    String name;
+    float translation[3];
+    float rotation[4];
+    float scale[3];
+    float matrix[4][4];
+    uint32_t * children;
+  } * nodes;
 
   struct Mesh{
     String name;
     struct Primitive{
       struct Attribute{
-        uint16_t
+        uint32_t
           JOINTS_0,
           TEXCOORD_0,
           WEIGHTS_0,
           NORMAL,
           POSITION;
-      } * attributes;
-      uint16_t indices;
-      uint16_t material;
-      uint16_t mode;
+      } attributes;
+      uint32_t indices;
+      uint32_t material;
+      uint32_t mode;
     } * primitives;
   } * meshes;
 
   struct Accessor{
+    uint32_t buffer_view;
+    uint32_t byte_offset;
+    uint32_t component_type;
+    uint32_t count;
+    //TODO: support all sorts of types
+    union Max_Min
+    {
+      float mat4[16];
+    } max, min;
+    String type;
 
-  };
+  } * accessors;
 
   struct Buffer_View{
-
+    uint32_t buffers;
+    uint32_t byte_length;
+    uint32_t byte_offset;
+    uint32_t target;
   } * buffer_views;
 
   struct Buffer{
     String uri;
     uint64_t byte_length;
-  };
+  } * buffers;
 
   uint32_t node_count;
   uint32_t mesh_count;
@@ -210,8 +232,10 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
     asset,
     scenes,
     nodes,
-    meshes__primitives,
-    meshes__primitives__attributes
+    meshes,
+    accessors,
+    buffer_views,
+    buffers,
   };
 
   int16_t stack_depth = -1;
@@ -291,16 +315,109 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
     };
   };
 
-  auto set_value_in_glTF_object_and_decrease_stack_depth = [&](String value) constexpr noexcept{
+  auto set_value_in_glTF = [&](String value, bool is_in_array = false) constexpr noexcept{
 
-  };
+    if(is_in_array and stack_items[stack_depth -1] not_eq definition) return Error::problem;
+    if(not is_in_array and stack_items[stack_depth] not_eq definition) return Error::problem;
 
-  auto set_value_in_gltf_array = [&]() constexpr noexcept{
+    auto check_definition_is = [&](const char * tag) constexpr noexcept{
+      auto current_definition = stack_tags[stack_depth - is_in_array];
+      return memcmp(tag, current_definition.data, current_definition.length);
+    };
 
-  };
+    //This always assumes correct data.
+    auto value_as_int = [&] constexpr noexcept{
+      uint32_t int_value = 0;
+      for(auto i = 0; i < value.length; ++i){
+        int_value += (value.data[i] - '0') * (10 * (value.length - i));
+      }
+      return int_value;
+    };
 
-  auto set_value_in_glTF_value_array = [&](String value) constexpr noexcept{
+    if(current_gltf_item == glTF_Item::asset){
+      if(check_definition_is("generator")) gltf.asset.generator = value;
+      else if (check_definition_is("version")) gltf.asset.version = value;
+      else return Error::problem;
+      return Error::no_problem;
+    }
 
+    //Only dealing with array objects from this point on
+    if(stack_items[2] not_eq array) return Error::problem;
+    auto current_index = stack_array_current_indices[2];
+
+    Parse_Item expected_stack_pattern[UINT8_MAX] = {none};
+    auto expected_stack_depth = 0;
+    auto add_item_to_pattern = [&](Parse_Item item) constexpr noexcept{
+      expected_stack_pattern[expected_stack_depth] = item;
+      ++expected_stack_depth;
+      return expected_stack_depth;
+    };
+
+    auto compair_stacks = [&] constexpr noexcept{
+      return memcmp(stack_items, expected_stack_pattern, expected_stack_depth * sizeof(Parse_Item));
+    };
+    //Base pattern
+    add_item_to_pattern(root);
+    add_item_to_pattern(definition);
+    add_item_to_pattern(array);
+    add_item_to_pattern(object);
+
+    auto root_item_definition_stack_index = 
+      add_item_to_pattern(definition);
+    auto root_item_tag = stack_tags[root_item_definition_stack_index];
+
+    auto set_meshes_primitives = [&]{
+      if(not compair(root_item_tag, "primitives")) return;
+
+      auto primitive_array_stack_index = 
+        add_item_to_pattern(array);
+      add_item_to_pattern(object);
+      add_item_to_pattern(definition);
+
+      if(memcmp(stack_items, expected_stack_pattern, 8 * sizeof(Parse_Item)))
+        auto definition = stack_tags[expected_stack_depth];
+        auto primitives_index = stack_array_current_indices[primitive_array_stack_index];
+        auto & primitive = gltf.meshes[current_index].primitives[primitives_index];
+        auto int_value = value_as_int();
+        if(compair(definition, "attributes")){
+          auto & attributes = primitive.attributes;
+               if(check_definition_is("POSITION")) attributes.POSITION = int_value;
+          else if(check_definition_is("JOINTS_0")) attributes.JOINTS_0 = int_value;
+          else if(check_definition_is("TEXCOORD_0")) attributes.TEXCOORD_0 = int_value;
+          else if(check_definition_is("WEIGHTS_0")) attributes.WEIGHTS_0 = int_value;
+          else if(check_definition_is("NORMAL")) attributes.NORMAL = int_value;
+        }
+        else if(check_definition_is("indices")) primitive.indices = int_value;
+        else if(check_definition_is("material")) primitive.material = int_value;
+        else if(check_definition_is("mode")) primitive.mode = int_value;
+        return Error::no_problem;
+    };
+
+
+
+    switch(current_gltf_item){
+      case glTF_Item::scenes:
+        if(check_definition_is("name")) gltf.scenes[current_index].name = value;
+        else if(check_definition_is("nodes")){
+          auto nodes_index = stack_array_current_indices[stack_depth];
+          gltf.scenes[current_index].nodes[nodes_index] = value_as_int();
+        }
+        return Error::no_problem;
+      case glTF_Item::nodes:
+        if(check_definition_is("name")) gltf.nodes[current_index].name = value;
+        //else if(check_definition_is("mesh")) gltf.nodes[current_index].
+        return Error::no_problem;
+      case glTF_Item::meshes:
+        if(check_definition_is("name")) gltf.meshes[current_index].name = value;
+        else return set_meshes_primitives();
+        return Error::no_problem;
+      case glTF_Item::accessors:
+        if(check_definition_is("bufferView")); 
+      case glTF_Item::buffer_views:
+      case glTF_Item::buffers:
+        return Error::no_problem;
+    };
+    return Error::no_problem;
   };
 
   auto add_defintion_to_stack = [&](String definition) constexpr noexcept{
@@ -362,17 +479,31 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
       }
 
       case definition :{ 
-        if(has_string) set_value_in_glTF_object_and_decrease_stack_depth(string);
+        if(has_string) set_value_in_glTF(string);
         else switch(current_symbol){
           case Symbol::open_squigily: add_object_to_stack(); continue;
           case Symbol::open_square: add_array_to_stack_and_init_array_in_gltf_object(symbol_index); continue;
+          //must be a value
+          case Symbol::close_squigily:{
+            auto begin_offset = symbol_offsets[symbol_index-1] + 1; 
+            auto end_offset = symbol_offsets[symbol_index] - 1;
+            auto string =  String{
+              .data = json + begin_offset,
+              .length = end_offset - begin_offset,
+            };
+
+            set_value_in_glTF(value);
+            //Close out the object.
+            --stack_depth;
+            continue;
+          }
           case Symbol::comma:{
             auto value = get_value_string_from_value_definition(symbol_index);
-            set_value_in_glTF_object_and_decrease_stack_depth(value);
+            set_value_in_glTF(value);
             continue;
           }
           default:continue;
-        } 
+        }
         continue;
       }
 
@@ -384,7 +515,7 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
 
       case array:{ 
         if(has_string){
-          set_value_in_glTF_value_array(string);
+          set_value_in_glTF(string);
           continue;
         }else switch(current_symbol){
           case Symbol::open_squigily: add_object_to_stack(); continue;
@@ -395,7 +526,7 @@ constexpr Error parse_gltf(byte const * const raw, uint64_t raw_length, GLTF &gl
             auto is_value = check_is_actualy_value_definition(symbol_index);
             if(is_value){
               auto value = get_value_string_from_value_definition(symbol_index);
-              set_value_in_glTF_value_array(value);
+              set_value_in_glTF_array(value);
             }
           }
 
